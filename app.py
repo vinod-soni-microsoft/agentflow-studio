@@ -185,6 +185,62 @@ def render_sequential_tab():
         if key not in st.session_state:
             st.session_state[key] = DEFAULT_INSTRUCTIONS["General Inquiry"][role]
 
+    # ── Agent Instructions — horizontal layout matching workflow flow ──
+    st.subheader("🛠️ Configure Agent Instructions")
+    st.caption(
+        "Set up instructions for each agent in the order they execute. "
+        "Quick-sample buttons below auto-fill scenario-specific defaults."
+    )
+
+    instr_col1, instr_arrow1, instr_col2, instr_arrow2, instr_col3 = st.columns(
+        [4, 0.5, 4, 0.5, 4]
+    )
+
+    with instr_col1:
+        st.markdown("#### Step 1 — 📋 Classifier")
+        st.caption("Categorizes the incoming ticket")
+        st.text_area(
+            "Classifier instructions:",
+            height=160,
+            key="seq_instr_classifier",
+            label_visibility="collapsed",
+        )
+
+    with instr_arrow1:
+        st.markdown("")
+        st.markdown("")
+        st.markdown("")
+        st.markdown("## ➜")
+
+    with instr_col2:
+        st.markdown("#### Step 2 — 🔍 Researcher")
+        st.caption("Looks up relevant knowledge-base info")
+        st.text_area(
+            "Researcher instructions:",
+            height=160,
+            key="seq_instr_researcher",
+            label_visibility="collapsed",
+        )
+
+    with instr_arrow2:
+        st.markdown("")
+        st.markdown("")
+        st.markdown("")
+        st.markdown("## ➜")
+
+    with instr_col3:
+        st.markdown("#### Step 3 — 💬 Responder")
+        st.caption("Drafts the final customer reply")
+        st.text_area(
+            "Responder instructions:",
+            height=160,
+            key="seq_instr_responder",
+            label_visibility="collapsed",
+        )
+
+    st.markdown("---")
+
+    # ── Ticket Input & Execution ──
     col1, col2 = st.columns([1, 1])
 
     with col1:
@@ -216,38 +272,9 @@ def render_sequential_tab():
             for role in ("classifier", "researcher", "responder"):
                 st.session_state[f"seq_instr_{role}"] = DEFAULT_INSTRUCTIONS[scenario][role]
 
-        st.markdown("**Quick samples:**")
+        st.markdown("**Quick samples** *(also updates agent instructions above)*:")
         for label, text in sample_tickets.items():
             st.button(label, key=f"seq_sample_{label}", on_click=_set_sample_ticket, args=(text, label))
-
-        # --- Agent Instructions Editor ---
-        st.markdown("---")
-        st.subheader("🛠️ Agent Instructions")
-        st.caption("Customize the instructions for each agent. Quick-sample buttons above load scenario-specific defaults.")
-
-        with st.expander("📋 Classifier Agent", expanded=False):
-            st.text_area(
-                "Classifier instructions:",
-                height=120,
-                key="seq_instr_classifier",
-                label_visibility="collapsed",
-            )
-
-        with st.expander("🔍 Researcher Agent", expanded=False):
-            st.text_area(
-                "Researcher instructions:",
-                height=120,
-                key="seq_instr_researcher",
-                label_visibility="collapsed",
-            )
-
-        with st.expander("💬 Responder Agent", expanded=False):
-            st.text_area(
-                "Responder instructions:",
-                height=120,
-                key="seq_instr_responder",
-                label_visibility="collapsed",
-            )
 
     with col2:
         st.subheader("Workflow Execution")
