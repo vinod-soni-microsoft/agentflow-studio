@@ -48,9 +48,15 @@ st.markdown("""
     .badge-done { background: #d4edda; color: #155724; }
     .badge-waiting { background: #cce5ff; color: #004085; }
     div[data-testid="stChatMessage"] { max-width: 100%; }
-    /* Hide Streamlit deploy button */
-    .stDeployButton { display: none !important; }
-    [data-testid="stToolbar"] .stDeployButton { display: none !important; }
+    /* Hide Streamlit deploy button & toolbar extras */
+    .stDeployButton,
+    [data-testid="stToolbar"] > div:has(.stDeployButton),
+    button[kind="header"],
+    #MainMenu,
+    header[data-testid="stHeader"] button[kind="header"],
+    .styles_viewerBadge__CvC9N,
+    ._profileContainer_gzau3_53,
+    ._profilePreview_gzau3_63 { display: none !important; visibility: hidden !important; }
 </style>
 """, unsafe_allow_html=True)
 
