@@ -118,9 +118,9 @@ def render_sequential_tab():
     with col1:
         st.subheader("Submit a Support Ticket")
 
-        # Initialize default ticket text
-        if "seq_ticket_value" not in st.session_state:
-            st.session_state["seq_ticket_value"] = (
+        # Initialize default ticket text in the widget key directly
+        if "seq_ticket" not in st.session_state:
+            st.session_state["seq_ticket"] = (
                 "Hi, I was charged twice for my subscription last month. "
                 "Order #12345. I've been a customer for 3 years and this is really "
                 "frustrating. Please help me get a refund ASAP."
@@ -128,7 +128,6 @@ def render_sequential_tab():
 
         ticket = st.text_area(
             "Customer ticket text:",
-            value=st.session_state["seq_ticket_value"],
             height=150,
             key="seq_ticket",
         )
@@ -138,11 +137,13 @@ def render_sequential_tab():
             "Technical Bug": "The dashboard keeps crashing when I try to export reports to PDF. Error code: E-5021.",
             "General Inquiry": "Can you tell me about your enterprise plan pricing and what features are included?",
         }
+
+        def _set_sample_ticket(text):
+            st.session_state["seq_ticket"] = text
+
         st.markdown("**Quick samples:**")
         for label, text in sample_tickets.items():
-            if st.button(label, key=f"seq_sample_{label}"):
-                st.session_state["seq_ticket_value"] = text
-                st.rerun()
+            st.button(label, key=f"seq_sample_{label}", on_click=_set_sample_ticket, args=(text,))
 
     with col2:
         st.subheader("Workflow Execution")
