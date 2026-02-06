@@ -48,6 +48,9 @@ st.markdown("""
     .badge-done { background: #d4edda; color: #155724; }
     .badge-waiting { background: #cce5ff; color: #004085; }
     div[data-testid="stChatMessage"] { max-width: 100%; }
+    /* Hide Streamlit deploy button */
+    .stDeployButton { display: none !important; }
+    [data-testid="stToolbar"] .stDeployButton { display: none !important; }
 </style>
 """, unsafe_allow_html=True)
 
