@@ -314,10 +314,13 @@ def render_hitl_tab():
                 try:
                     from workflows.human_in_the_loop_workflow import HumanInTheLoopSession
 
-                    session = HumanInTheLoopSession()
-                    # Restart the workflow and immediately submit the decision
-                    run_async(session.start(st.session_state.hitl_expense))
-                    events = run_async(session.submit_decision(decision))
+                    async def _run_hitl_end_to_end(expense_text, human_decision):
+                        """Run start + decision in one event loop to avoid concurrent-run error."""
+                        session = HumanInTheLoopSession()
+                        await session.start(expense_text)
+                        return await session.submit_decision(human_decision)
+
+                    events = run_async(_run_hitl_end_to_end(st.session_state.hitl_expense, decision))
                     st.session_state.hitl_final_events = events
                     st.session_state.hitl_phase = "done"
                     status.update(label="Processing complete!", state="complete")
