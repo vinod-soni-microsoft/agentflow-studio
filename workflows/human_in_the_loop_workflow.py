@@ -293,8 +293,8 @@ class HumanInTheLoopSession:
             }
         elif isinstance(event, RequestInfoEvent):
             analysis = ""
-            if hasattr(event.request_data, "analysis_summary"):
-                analysis = event.request_data.analysis_summary
+            if hasattr(event.data, "analysis_summary"):
+                analysis = event.data.analysis_summary
             return {
                 "type": "request_info",
                 "agent": event.source_executor_id,
