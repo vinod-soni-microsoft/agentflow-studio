@@ -113,6 +113,78 @@ def render_sequential_tab():
         ```
         """)
 
+    # --- Default instructions per scenario ---
+    DEFAULT_INSTRUCTIONS = {
+        "Billing Issue": {
+            "classifier": (
+                "You are a billing-specialist ticket classifier. "
+                "Read the customer ticket and identify the billing sub-category "
+                "(Duplicate Charge, Subscription Cancellation, Refund Request, or Other Billing). "
+                "Format: 'Category: Billing — <sub-category>\nReason: <reason>'"
+            ),
+            "researcher": (
+                "You are a billing knowledge-base researcher. "
+                "Given the ticket and classification, find relevant billing policies, "
+                "refund timelines, and dispute resolution steps. "
+                "Provide 2-3 concise bullet points."
+            ),
+            "responder": (
+                "You are a billing support specialist. "
+                "Using the ticket, classification, and billing policy notes, "
+                "draft an empathetic reply that acknowledges the billing concern, "
+                "explains the resolution process, and provides a clear timeline. "
+                "Keep it under 150 words."
+            ),
+        },
+        "Technical Bug": {
+            "classifier": (
+                "You are a technical-support ticket classifier. "
+                "Read the customer ticket and identify the technical sub-category "
+                "(UI Bug, API Error, Performance Issue, or Other Technical). "
+                "Format: 'Category: Technical — <sub-category>\nReason: <reason>'"
+            ),
+            "researcher": (
+                "You are a technical knowledge-base researcher. "
+                "Given the ticket and classification, find relevant troubleshooting steps, "
+                "known issues, and workarounds from the engineering knowledge base. "
+                "Provide 2-3 concise bullet points."
+            ),
+            "responder": (
+                "You are a technical support engineer. "
+                "Using the ticket, classification, and troubleshooting notes, "
+                "draft a helpful reply with clear next steps or workarounds. "
+                "Include any relevant error-code references. "
+                "Keep it under 150 words."
+            ),
+        },
+        "General Inquiry": {
+            "classifier": (
+                "You are a customer-support ticket classifier. "
+                "Read the customer ticket and respond with EXACTLY one category "
+                "(Billing, Technical, or General) followed by a one-sentence reason. "
+                "Format: 'Category: <category>\nReason: <reason>'"
+            ),
+            "researcher": (
+                "You are a knowledge-base researcher for a support team. "
+                "Given the ticket and its classification, provide 2-3 bullet points "
+                "of relevant knowledge-base information that would help draft a reply. "
+                "Be concise and factual."
+            ),
+            "responder": (
+                "You are a professional customer-support agent. "
+                "Using the ticket, classification, and knowledge-base notes provided, "
+                "draft a friendly, empathetic, and helpful reply to the customer. "
+                "Keep it under 150 words."
+            ),
+        },
+    }
+
+    # Initialize instruction keys with General Inquiry defaults
+    for role in ("classifier", "researcher", "responder"):
+        key = f"seq_instr_{role}"
+        if key not in st.session_state:
+            st.session_state[key] = DEFAULT_INSTRUCTIONS["General Inquiry"][role]
+
     col1, col2 = st.columns([1, 1])
 
     with col1:
@@ -138,12 +210,44 @@ def render_sequential_tab():
             "General Inquiry": "Can you tell me about your enterprise plan pricing and what features are included?",
         }
 
-        def _set_sample_ticket(text):
+        def _set_sample_ticket(text, scenario):
             st.session_state["seq_ticket"] = text
+            # Update instructions to scenario-specific defaults
+            for role in ("classifier", "researcher", "responder"):
+                st.session_state[f"seq_instr_{role}"] = DEFAULT_INSTRUCTIONS[scenario][role]
 
         st.markdown("**Quick samples:**")
         for label, text in sample_tickets.items():
-            st.button(label, key=f"seq_sample_{label}", on_click=_set_sample_ticket, args=(text,))
+            st.button(label, key=f"seq_sample_{label}", on_click=_set_sample_ticket, args=(text, label))
+
+        # --- Agent Instructions Editor ---
+        st.markdown("---")
+        st.subheader("🛠️ Agent Instructions")
+        st.caption("Customize the instructions for each agent. Quick-sample buttons above load scenario-specific defaults.")
+
+        with st.expander("📋 Classifier Agent", expanded=False):
+            st.text_area(
+                "Classifier instructions:",
+                height=120,
+                key="seq_instr_classifier",
+                label_visibility="collapsed",
+            )
+
+        with st.expander("🔍 Researcher Agent", expanded=False):
+            st.text_area(
+                "Researcher instructions:",
+                height=120,
+                key="seq_instr_researcher",
+                label_visibility="collapsed",
+            )
+
+        with st.expander("💬 Responder Agent", expanded=False):
+            st.text_area(
+                "Responder instructions:",
+                height=120,
+                key="seq_instr_responder",
+                label_visibility="collapsed",
+            )
 
     with col2:
         st.subheader("Workflow Execution")
@@ -159,7 +263,13 @@ def render_sequential_tab():
                     all_events.append(evt)
 
                 try:
-                    events = run_async(run_sequential_workflow(ticket, on_event=on_event))
+                    events = run_async(run_sequential_workflow(
+                        ticket,
+                        on_event=on_event,
+                        classifier_instructions=st.session_state.get("seq_instr_classifier"),
+                        researcher_instructions=st.session_state.get("seq_instr_researcher"),
+                        responder_instructions=st.session_state.get("seq_instr_responder"),
+                    ))
 
                     for evt in events:
                         icon = {"status": "⚙️", "output": "✅"}.get(evt["type"], "📨")

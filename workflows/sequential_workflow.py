@@ -92,7 +92,13 @@ class ResponderExecutor(Executor):
 # ---------------------------------------------------------------------------
 # Public API — called from the Streamlit UI
 # ---------------------------------------------------------------------------
-async def run_sequential_workflow(ticket_text: str, on_event=None):
+async def run_sequential_workflow(
+    ticket_text: str,
+    on_event=None,
+    classifier_instructions: str | None = None,
+    researcher_instructions: str | None = None,
+    responder_instructions: str | None = None,
+):
     """
     Execute the sequential pipeline and return a list of event dicts
     suitable for rendering in the UI.
@@ -103,12 +109,41 @@ async def run_sequential_workflow(ticket_text: str, on_event=None):
         The raw customer support ticket text.
     on_event : callable, optional
         An optional callback ``(event_dict) -> None`` invoked per event.
+    classifier_instructions : str, optional
+        Custom instructions for the Classifier agent.
+    researcher_instructions : str, optional
+        Custom instructions for the Researcher agent.
+    responder_instructions : str, optional
+        Custom instructions for the Responder agent.
 
     Returns
     -------
     list[dict]
         A list of event dictionaries with keys ``type``, ``agent``, ``content``.
     """
+    # Defaults
+    if not classifier_instructions:
+        classifier_instructions = (
+            "You are a customer-support ticket classifier. "
+            "Read the customer ticket and respond with EXACTLY one category "
+            "(Billing, Technical, or General) followed by a one-sentence reason. "
+            "Format: 'Category: <category>\\nReason: <reason>'"
+        )
+    if not researcher_instructions:
+        researcher_instructions = (
+            "You are a knowledge-base researcher for a support team. "
+            "Given the ticket and its classification, provide 2-3 bullet points "
+            "of relevant knowledge-base information that would help draft a reply. "
+            "Be concise and factual."
+        )
+    if not responder_instructions:
+        responder_instructions = (
+            "You are a professional customer-support agent. "
+            "Using the ticket, classification, and knowledge-base notes provided, "
+            "draft a friendly, empathetic, and helpful reply to the customer. "
+            "Keep it under 150 words."
+        )
+
     events_log: list[dict] = []
 
     async with DefaultAzureCredential() as credential:
@@ -121,30 +156,15 @@ async def run_sequential_workflow(ticket_text: str, on_event=None):
         async with (
             AzureAIClient(**client_kwargs).create_agent(
                 name="TicketClassifier",
-                instructions=(
-                    "You are a customer-support ticket classifier. "
-                    "Read the customer ticket and respond with EXACTLY one category "
-                    "(Billing, Technical, or General) followed by a one-sentence reason. "
-                    "Format: 'Category: <category>\\nReason: <reason>'"
-                ),
+                instructions=classifier_instructions,
             ) as classifier_agent,
             AzureAIClient(**client_kwargs).create_agent(
                 name="KnowledgeResearcher",
-                instructions=(
-                    "You are a knowledge-base researcher for a support team. "
-                    "Given the ticket and its classification, provide 2-3 bullet points "
-                    "of relevant knowledge-base information that would help draft a reply. "
-                    "Be concise and factual."
-                ),
+                instructions=researcher_instructions,
             ) as researcher_agent,
             AzureAIClient(**client_kwargs).create_agent(
                 name="SupportResponder",
-                instructions=(
-                    "You are a professional customer-support agent. "
-                    "Using the ticket, classification, and knowledge-base notes provided, "
-                    "draft a friendly, empathetic, and helpful reply to the customer. "
-                    "Keep it under 150 words."
-                ),
+                instructions=responder_instructions,
             ) as responder_agent,
         ):
             classifier = ClassifierExecutor(classifier_agent)
