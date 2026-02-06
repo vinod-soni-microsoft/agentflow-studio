@@ -1,5 +1,5 @@
 """
-admin-5794 Workflow Demos — Streamlit UI
+AgentFlow Studio — Streamlit UI
 =========================================
 A tabbed dashboard that demonstrates three Azure AI Foundry workflow patterns:
   • Sequential (Customer Support Triage)
@@ -15,7 +15,7 @@ from config import validate_config
 # Page configuration
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="admin-5794 · Workflow Demos",
+    page_title="AgentFlow Studio · Workflow Demos",
     page_icon="🔄",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -56,8 +56,8 @@ st.markdown("""
 # ---------------------------------------------------------------------------
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/96/artificial-intelligence.png", width=64)
-    st.title("admin-5794")
-    st.caption("Azure AI Foundry Workflow Demos")
+    st.title("AgentFlow Studio")
+    st.caption("Multi-Agent Workflow Demos · Powered by Azure AI Foundry")
     st.divider()
 
     config_ok = validate_config()
@@ -582,7 +582,7 @@ def render_group_chat_tab():
 # Main — Tabbed layout
 # ---------------------------------------------------------------------------
 st.title("🔄 Azure AI Foundry Workflow Demos")
-st.caption("Project: admin-5794 · Microsoft Agent Framework powered workflows")
+st.caption("AgentFlow Studio · Microsoft Agent Framework powered workflows")
 
 tab1, tab2, tab3 = st.tabs([
     "🔗 Sequential Workflow",
@@ -603,5 +603,5 @@ with tab3:
 st.divider()
 st.caption(
     "Built with [Microsoft Agent Framework](https://github.com/microsoft/agent-framework) "
-    "and [Streamlit](https://streamlit.io) · admin-5794"
+    "and [Streamlit](https://streamlit.io) · AgentFlow Studio"
 )
