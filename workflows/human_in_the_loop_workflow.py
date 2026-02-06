@@ -8,17 +8,19 @@ Real-world use case: An employee submits an expense report. The system:
      reject, or request more information.
   3. **Processor** agent finalizes the expense based on the human decision.
 
-This demonstrates the IDLE_WITH_PENDING_REQUESTS state that signals
+This demonstrates the request_info / response_handler pattern that signals
 the UI to collect human input before the workflow can continue.
 """
 
 import asyncio
+from dataclasses import dataclass
 from typing import Any
 
 from agent_framework import (
     ChatAgent,
     ChatMessage,
     Executor,
+    RequestInfoEvent,
     Role,
     WorkflowBuilder,
     WorkflowContext,
@@ -26,11 +28,23 @@ from agent_framework import (
     WorkflowStatusEvent,
     WorkflowRunState,
     handler,
+    response_handler,
 )
 from agent_framework.azure import AzureAIClient
 from azure.identity.aio import DefaultAzureCredential
 
 from config import FOUNDRY_PROJECT_ENDPOINT, FOUNDRY_MODEL_DEPLOYMENT_NAME
+
+
+# ---------------------------------------------------------------------------
+# Request data class — carried by RequestInfoEvent
+# ---------------------------------------------------------------------------
+@dataclass
+class HumanDecisionRequest:
+    """Payload sent to the UI when the workflow needs a human decision."""
+    prompt: str
+    options: list[str]
+    analysis_summary: str
 
 
 # ---------------------------------------------------------------------------
@@ -59,9 +73,12 @@ class AnalystExecutor(Executor):
 # ---------------------------------------------------------------------------
 class HumanGateExecutor(Executor):
     """
-    Pauses the workflow by requesting external input.
-    The Streamlit UI detects the IDLE_WITH_PENDING_REQUESTS state
-    and presents an approval form to the user.
+    Pauses the workflow by calling request_info().
+    The workflow emits a RequestInfoEvent and state becomes
+    IDLE_WITH_PENDING_REQUESTS.  The UI detects this and shows
+    an approval form.  Once the user decides, the UI calls
+    workflow.send_responses() which routes through the
+    @response_handler below.
     """
 
     _pending_messages: list[ChatMessage] | None = None
@@ -71,23 +88,39 @@ class HumanGateExecutor(Executor):
 
     @handler
     async def receive_analysis(self, messages: list[ChatMessage], ctx: WorkflowContext[list[ChatMessage]]) -> None:
-        """Store the analysis and request human input."""
+        """Store the analysis and request human input via request_info."""
         self._pending_messages = messages
-        # Request external input — this causes the workflow state to become
-        # IDLE_WITH_PENDING_REQUESTS, signalling the UI to gather human input.
-        await ctx.request_external_input(
-            {
-                "prompt": "Please review the expense analysis above and provide your decision.",
-                "options": ["Approved", "Rejected", "Need More Info"],
-                "analysis_summary": messages[-1].contents[-1].text if messages else "",
-            }
+
+        # Extract analysis text for the UI
+        analysis_text = ""
+        if messages:
+            last_msg = messages[-1]
+            if hasattr(last_msg, "contents") and last_msg.contents:
+                part = last_msg.contents[-1]
+                analysis_text = part.text if hasattr(part, "text") else str(part)
+            elif hasattr(last_msg, "text"):
+                analysis_text = last_msg.text or ""
+
+        # request_info pauses the workflow and emits a RequestInfoEvent
+        await ctx.request_info(
+            HumanDecisionRequest(
+                prompt="Please review the expense analysis above and provide your decision.",
+                options=["Approved", "Rejected", "Need More Info"],
+                analysis_summary=analysis_text[:500],
+            ),
+            str,  # expected response type
         )
 
-    @handler
-    async def receive_human_decision(self, decision: str, ctx: WorkflowContext[list[ChatMessage]]) -> None:
-        """Resume after the human provides a decision."""
+    @response_handler
+    async def handle_human_response(
+        self,
+        original_request: HumanDecisionRequest,
+        response: str,
+        ctx: WorkflowContext[list[ChatMessage]],
+    ) -> None:
+        """Called when the human submits a decision via send_responses."""
         messages = self._pending_messages or []
-        messages.append(ChatMessage(role=Role.USER, text=f"Manager decision: {decision}"))
+        messages.append(ChatMessage(role=Role.USER, text=f"Manager decision: {response}"))
         await ctx.send_message(messages)
 
 
@@ -127,6 +160,7 @@ class HumanInTheLoopSession:
         self._workflow = None
         self._stream = None
         self._events_log: list[dict] = []
+        self._pending_request_id: str | None = None
 
     async def start(self, expense_text: str, on_event=None) -> list[dict]:
         """
@@ -191,9 +225,14 @@ class HumanInTheLoopSession:
         """
         if self._workflow is None:
             raise RuntimeError("Workflow not started. Call start() first.")
+        if self._pending_request_id is None:
+            raise RuntimeError("No pending request. The workflow may not have paused for input.")
 
-        # Send the human decision back into the workflow
-        await self._workflow.send_external_input(self._human_gate.id, decision)
+        # send_responses_streaming returns an async iterable of events
+        self._stream = self._workflow.send_responses_streaming(
+            {self._pending_request_id: decision}
+        )
+        self._pending_request_id = None
 
         events = await self._consume_until_pause(on_event)
 
@@ -205,6 +244,10 @@ class HumanInTheLoopSession:
         """Read events from the stream until the workflow pauses or completes."""
         batch: list[dict] = []
         async for event in self._stream:
+            # Capture the request_id from RequestInfoEvent so we can respond later
+            if isinstance(event, RequestInfoEvent):
+                self._pending_request_id = event.request_id
+
             entry = self._event_to_dict(event)
             if entry:
                 batch.append(entry)
@@ -248,17 +291,22 @@ class HumanInTheLoopSession:
                 "agent": "processor",
                 "content": event.data,
             }
+        elif isinstance(event, RequestInfoEvent):
+            analysis = ""
+            if hasattr(event.request_data, "analysis_summary"):
+                analysis = event.request_data.analysis_summary
+            return {
+                "type": "request_info",
+                "agent": event.source_executor_id,
+                "content": analysis,
+            }
         else:
             evt_name = event.__class__.__name__
             executor_id = getattr(event, "executor_id", "")
-            # Extract request payload if present
-            extra = ""
-            if hasattr(event, "data") and isinstance(event.data, dict):
-                extra = event.data.get("analysis_summary", "")
             return {
                 "type": evt_name,
                 "agent": executor_id,
-                "content": extra or str(event),
+                "content": str(event),
             }
 
     @property
