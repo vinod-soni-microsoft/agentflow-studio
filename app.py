@@ -351,6 +351,72 @@ def render_hitl_tab():
         ```
         """)
 
+    # --- Default HITL instructions ---
+    HITL_DEFAULT_ANALYST = (
+        "You are a corporate expense analyst. Review the submitted expense report "
+        "and produce a structured analysis with:\n"
+        "1. Expense summary (amount, category, vendor)\n"
+        "2. Policy compliance check\n"
+        "3. Risk flags (if any)\n"
+        "4. Recommendation: APPROVE or FLAG FOR REVIEW\n"
+        "Be concise and professional."
+    )
+    HITL_DEFAULT_PROCESSOR = (
+        "You are an expense processing agent. Based on the expense analysis "
+        "and the manager's decision, produce a final processing summary:\n"
+        "- If approved: confirm processing and expected reimbursement timeline.\n"
+        "- If rejected: explain the reason and next steps for the employee.\n"
+        "- If more info needed: list the specific information required.\n"
+        "Keep the tone professional and helpful."
+    )
+
+    for role, default in [("analyst", HITL_DEFAULT_ANALYST), ("processor", HITL_DEFAULT_PROCESSOR)]:
+        key = f"hitl_instr_{role}"
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    # ── Agent Instructions — horizontal layout matching workflow flow ──
+    st.subheader("\U0001f6e0\ufe0f Configure Agent Instructions")
+    st.caption(
+        "Set up instructions for each agent in the order they execute. "
+        "The Human Gate executor pauses the workflow for a human decision (no LLM instructions)."
+    )
+
+    h_col1, h_arrow1, h_col2, h_arrow2, h_col3 = st.columns([4, 0.5, 3, 0.5, 4])
+
+    with h_col1:
+        st.markdown("#### Step 1 \u2014 \U0001f4ca Analyst")
+        st.caption("Reviews expense & recommends action")
+        st.text_area(
+            "Analyst instructions:",
+            height=160,
+            key="hitl_instr_analyst",
+            label_visibility="collapsed",
+        )
+
+    with h_arrow1:
+        st.markdown(""); st.markdown(""); st.markdown(""); st.markdown("## \u27a8")
+
+    with h_col2:
+        st.markdown("#### Step 2 \u2014 \U0001f64b Human Gate")
+        st.caption("\u23f8 Pauses for manager decision")
+        st.info("No LLM instructions \u2014 this is a human checkpoint. The workflow pauses and waits for Approve / Reject / Need More Info.")
+
+    with h_arrow2:
+        st.markdown(""); st.markdown(""); st.markdown(""); st.markdown("## \u27a8")
+
+    with h_col3:
+        st.markdown("#### Step 3 \u2014 \U0001f4bc Processor")
+        st.caption("Finalizes based on human decision")
+        st.text_area(
+            "Processor instructions:",
+            height=160,
+            key="hitl_instr_processor",
+            label_visibility="collapsed",
+        )
+
+    st.markdown("---")
+
     # Initialize session state for HITL
     if "hitl_phase" not in st.session_state:
         st.session_state.hitl_phase = "input"  # input → analyzing → decision → processing → done
@@ -400,7 +466,10 @@ def render_hitl_tab():
                 try:
                     from workflows.human_in_the_loop_workflow import HumanInTheLoopSession
 
-                    session = HumanInTheLoopSession()
+                    session = HumanInTheLoopSession(
+                        analyst_instructions=st.session_state.get("hitl_instr_analyst"),
+                        processor_instructions=st.session_state.get("hitl_instr_processor"),
+                    )
                     events = run_async(session.start(st.session_state.hitl_expense))
                     st.session_state.hitl_analysis_events = events
                     # Store session for later (we'll recreate it since async context is tricky)
@@ -463,7 +532,10 @@ def render_hitl_tab():
 
                     async def _run_hitl_end_to_end(expense_text, human_decision):
                         """Run start + decision in one event loop to avoid concurrent-run error."""
-                        session = HumanInTheLoopSession()
+                        session = HumanInTheLoopSession(
+                            analyst_instructions=st.session_state.get("hitl_instr_analyst"),
+                            processor_instructions=st.session_state.get("hitl_instr_processor"),
+                        )
                         await session.start(expense_text)
                         return await session.submit_decision(human_decision)
 
@@ -518,6 +590,77 @@ def render_group_chat_tab():
         ```
         """)
 
+    # --- Default Group Chat instructions ---
+    GC_DEFAULT_MARKETING = (
+        "You are the Marketing Lead in a product launch brainstorm. "
+        "Focus on brand messaging, target audience, campaign channels, "
+        "and competitive positioning. Be creative but practical. "
+        "Keep responses under 100 words. Reference other participants' points."
+    )
+    GC_DEFAULT_ENGINEERING = (
+        "You are the Engineering Lead in a product launch brainstorm. "
+        "Focus on feature readiness, technical milestones, scalability "
+        "concerns, and integration points. Be realistic about timelines. "
+        "Keep responses under 100 words. Build on the discussion."
+    )
+    GC_DEFAULT_PM = (
+        "You are the Product Manager leading a product launch brainstorm. "
+        "Synthesize marketing and engineering perspectives. Focus on "
+        "prioritization, go-to-market strategy, success metrics, and risks. "
+        "Keep responses under 100 words. Drive toward actionable decisions."
+    )
+
+    for role, default in [("marketing", GC_DEFAULT_MARKETING), ("engineering", GC_DEFAULT_ENGINEERING), ("pm", GC_DEFAULT_PM)]:
+        key = f"gc_instr_{role}"
+        if key not in st.session_state:
+            st.session_state[key] = default
+
+    # ── Agent Instructions — horizontal layout matching workflow flow ──
+    st.subheader("\U0001f6e0\ufe0f Configure Agent Instructions")
+    st.caption(
+        "Set up instructions for each participant. All three take turns in round-robin order."
+    )
+
+    g_col1, g_arrow1, g_col2, g_arrow2, g_col3 = st.columns([4, 0.5, 4, 0.5, 4])
+
+    with g_col1:
+        st.markdown("#### \U0001f4e3 Marketing Lead")
+        st.caption("Messaging, audience & campaigns")
+        st.text_area(
+            "Marketing Lead instructions:",
+            height=160,
+            key="gc_instr_marketing",
+            label_visibility="collapsed",
+        )
+
+    with g_arrow1:
+        st.markdown(""); st.markdown(""); st.markdown(""); st.markdown("## \u27a8")
+
+    with g_col2:
+        st.markdown("#### \u2699\ufe0f Engineering Lead")
+        st.caption("Features, timelines & tech constraints")
+        st.text_area(
+            "Engineering Lead instructions:",
+            height=160,
+            key="gc_instr_engineering",
+            label_visibility="collapsed",
+        )
+
+    with g_arrow2:
+        st.markdown(""); st.markdown(""); st.markdown(""); st.markdown("## \u27a8")
+
+    with g_col3:
+        st.markdown("#### \U0001f4cb Product Manager")
+        st.caption("Strategy, priorities & final plan")
+        st.text_area(
+            "Product Manager instructions:",
+            height=160,
+            key="gc_instr_pm",
+            label_visibility="collapsed",
+        )
+
+    st.markdown("---")
+
     col1, col2 = st.columns([1, 1])
 
     with col1:
@@ -560,7 +703,13 @@ def render_group_chat_tab():
 
             with st.status(f"Running {rounds}-round brainstorm...", expanded=True) as status:
                 try:
-                    events = run_async(run_group_chat_workflow(topic, max_rounds=rounds))
+                    events = run_async(run_group_chat_workflow(
+                        topic,
+                        max_rounds=rounds,
+                        marketing_instructions=st.session_state.get("gc_instr_marketing"),
+                        engineering_instructions=st.session_state.get("gc_instr_engineering"),
+                        pm_instructions=st.session_state.get("gc_instr_pm"),
+                    ))
 
                     # Render as a chat-like interface
                     for evt in events:

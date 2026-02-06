@@ -156,10 +156,31 @@ class HumanInTheLoopSession:
         events  = await session.submit_decision("Approved")
     """
 
-    def __init__(self):
+    def __init__(
+        self,
+        analyst_instructions: str | None = None,
+        processor_instructions: str | None = None,
+    ):
         self._workflow = None
         self._events_log: list[dict] = []
         self._pending_request_id: str | None = None
+        self._analyst_instructions = analyst_instructions or (
+            "You are a corporate expense analyst. Review the submitted expense report "
+            "and produce a structured analysis with:\n"
+            "1. Expense summary (amount, category, vendor)\n"
+            "2. Policy compliance check\n"
+            "3. Risk flags (if any)\n"
+            "4. Recommendation: APPROVE or FLAG FOR REVIEW\n"
+            "Be concise and professional."
+        )
+        self._processor_instructions = processor_instructions or (
+            "You are an expense processing agent. Based on the expense analysis "
+            "and the manager's decision, produce a final processing summary:\n"
+            "- If approved: confirm processing and expected reimbursement timeline.\n"
+            "- If rejected: explain the reason and next steps for the employee.\n"
+            "- If more info needed: list the specific information required.\n"
+            "Keep the tone professional and helpful."
+        )
 
     async def start(self, expense_text: str, on_event=None) -> list[dict]:
         """
@@ -177,27 +198,12 @@ class HumanInTheLoopSession:
 
         self._analyst_agent = await AzureAIClient(**client_kwargs).create_agent(
             name="ExpenseAnalyst",
-            instructions=(
-                "You are a corporate expense analyst. Review the submitted expense report "
-                "and produce a structured analysis with:\n"
-                "1. Expense summary (amount, category, vendor)\n"
-                "2. Policy compliance check\n"
-                "3. Risk flags (if any)\n"
-                "4. Recommendation: APPROVE or FLAG FOR REVIEW\n"
-                "Be concise and professional."
-            ),
+            instructions=self._analyst_instructions,
         ).__aenter__()
 
         self._processor_agent = await AzureAIClient(**client_kwargs).create_agent(
             name="ExpenseProcessor",
-            instructions=(
-                "You are an expense processing agent. Based on the expense analysis "
-                "and the manager's decision, produce a final processing summary:\n"
-                "- If approved: confirm processing and expected reimbursement timeline.\n"
-                "- If rejected: explain the reason and next steps for the employee.\n"
-                "- If more info needed: list the specific information required.\n"
-                "Keep the tone professional and helpful."
-            ),
+            instructions=self._processor_instructions,
         ).__aenter__()
 
         analyst = AnalystExecutor(self._analyst_agent)

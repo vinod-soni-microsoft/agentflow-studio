@@ -138,6 +138,9 @@ async def run_group_chat_workflow(
     topic: str,
     max_rounds: int = DEFAULT_ROUNDS,
     on_event=None,
+    marketing_instructions: str | None = None,
+    engineering_instructions: str | None = None,
+    pm_instructions: str | None = None,
 ) -> list[dict]:
     """
     Execute the group-chat brainstorm and return structured events.
@@ -156,6 +159,29 @@ async def run_group_chat_workflow(
     list[dict]
         Events with keys ``type``, ``agent``, ``round``, ``content``.
     """
+    # Defaults
+    if not marketing_instructions:
+        marketing_instructions = (
+            "You are the Marketing Lead in a product launch brainstorm. "
+            "Focus on brand messaging, target audience, campaign channels, "
+            "and competitive positioning. Be creative but practical. "
+            "Keep responses under 100 words. Reference other participants' points."
+        )
+    if not engineering_instructions:
+        engineering_instructions = (
+            "You are the Engineering Lead in a product launch brainstorm. "
+            "Focus on feature readiness, technical milestones, scalability "
+            "concerns, and integration points. Be realistic about timelines. "
+            "Keep responses under 100 words. Build on the discussion."
+        )
+    if not pm_instructions:
+        pm_instructions = (
+            "You are the Product Manager leading a product launch brainstorm. "
+            "Synthesize marketing and engineering perspectives. Focus on "
+            "prioritization, go-to-market strategy, success metrics, and risks. "
+            "Keep responses under 100 words. Drive toward actionable decisions."
+        )
+
     all_events: list[dict] = []
 
     async with DefaultAzureCredential() as credential:
@@ -168,30 +194,15 @@ async def run_group_chat_workflow(
         async with (
             AzureAIClient(**client_kwargs).create_agent(
                 name="MarketingLead",
-                instructions=(
-                    "You are the Marketing Lead in a product launch brainstorm. "
-                    "Focus on brand messaging, target audience, campaign channels, "
-                    "and competitive positioning. Be creative but practical. "
-                    "Keep responses under 100 words. Reference other participants' points."
-                ),
+                instructions=marketing_instructions,
             ) as marketing_agent,
             AzureAIClient(**client_kwargs).create_agent(
                 name="EngineeringLead",
-                instructions=(
-                    "You are the Engineering Lead in a product launch brainstorm. "
-                    "Focus on feature readiness, technical milestones, scalability "
-                    "concerns, and integration points. Be realistic about timelines. "
-                    "Keep responses under 100 words. Build on the discussion."
-                ),
+                instructions=engineering_instructions,
             ) as engineering_agent,
             AzureAIClient(**client_kwargs).create_agent(
                 name="ProductManager",
-                instructions=(
-                    "You are the Product Manager leading a product launch brainstorm. "
-                    "Synthesize marketing and engineering perspectives. Focus on "
-                    "prioritization, go-to-market strategy, success metrics, and risks. "
-                    "Keep responses under 100 words. Drive toward actionable decisions."
-                ),
+                instructions=pm_instructions,
             ) as pm_agent,
         ):
             agents = {
