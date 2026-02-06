@@ -158,7 +158,6 @@ class HumanInTheLoopSession:
 
     def __init__(self):
         self._workflow = None
-        self._stream = None
         self._events_log: list[dict] = []
         self._pending_request_id: str | None = None
 
@@ -214,9 +213,16 @@ class HumanInTheLoopSession:
         )
 
         user_msg = ChatMessage(role=Role.USER, text=expense_text)
-        self._stream = self._workflow.run_stream(user_msg)
 
-        return await self._consume_until_pause(on_event)
+        # Use non-streaming run() — it returns a WorkflowRunResult when the
+        # workflow reaches IDLE or IDLE_WITH_PENDING_REQUESTS.
+        result = await self._workflow.run(user_msg, include_status_events=True)
+
+        # Extract the request_id so we can respond later
+        for req_evt in result.get_request_info_events():
+            self._pending_request_id = req_evt.request_id
+
+        return self._result_to_dicts(result, on_event)
 
     async def submit_decision(self, decision: str, on_event=None) -> list[dict]:
         """
@@ -228,41 +234,37 @@ class HumanInTheLoopSession:
         if self._pending_request_id is None:
             raise RuntimeError("No pending request. The workflow may not have paused for input.")
 
-        # send_responses_streaming returns an async iterable of events
-        self._stream = self._workflow.send_responses_streaming(
+        # Non-streaming send_responses completes the remaining workflow.
+        result = await self._workflow.send_responses(
             {self._pending_request_id: decision}
         )
         self._pending_request_id = None
 
-        events = await self._consume_until_pause(on_event)
+        events = self._result_to_dicts(result, on_event)
 
         # Cleanup
         await self._cleanup()
         return events
 
-    async def _consume_until_pause(self, on_event=None) -> list[dict]:
-        """Read events from the stream until the workflow pauses or completes."""
+    def _result_to_dicts(self, result, on_event=None) -> list[dict]:
+        """Convert a WorkflowRunResult into a list of UI-friendly dicts."""
         batch: list[dict] = []
-        async for event in self._stream:
-            # Capture the request_id from RequestInfoEvent so we can respond later
-            if isinstance(event, RequestInfoEvent):
-                self._pending_request_id = event.request_id
-
+        # Data-plane events (the result itself is a list of WorkflowEvent)
+        for event in result:
             entry = self._event_to_dict(event)
             if entry:
                 batch.append(entry)
                 self._events_log.append(entry)
                 if on_event:
                     on_event(entry)
-
-            # Stop reading when human input is needed or workflow is idle
-            if isinstance(event, WorkflowStatusEvent):
-                if event.state in (
-                    WorkflowRunState.IDLE_WITH_PENDING_REQUESTS,
-                    WorkflowRunState.IDLE,
-                ):
-                    break
-
+        # Also include status events for completeness
+        for event in result.status_timeline():
+            entry = self._event_to_dict(event)
+            if entry:
+                batch.append(entry)
+                self._events_log.append(entry)
+                if on_event:
+                    on_event(entry)
         return batch
 
     async def _cleanup(self):
