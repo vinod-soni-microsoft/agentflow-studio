@@ -117,13 +117,18 @@ def render_sequential_tab():
 
     with col1:
         st.subheader("Submit a Support Ticket")
-        ticket = st.text_area(
-            "Customer ticket text:",
-            value=(
+
+        # Initialize default ticket text
+        if "seq_ticket_value" not in st.session_state:
+            st.session_state["seq_ticket_value"] = (
                 "Hi, I was charged twice for my subscription last month. "
                 "Order #12345. I've been a customer for 3 years and this is really "
                 "frustrating. Please help me get a refund ASAP."
-            ),
+            )
+
+        ticket = st.text_area(
+            "Customer ticket text:",
+            value=st.session_state["seq_ticket_value"],
             height=150,
             key="seq_ticket",
         )
@@ -136,7 +141,7 @@ def render_sequential_tab():
         st.markdown("**Quick samples:**")
         for label, text in sample_tickets.items():
             if st.button(label, key=f"seq_sample_{label}"):
-                st.session_state["seq_ticket"] = text
+                st.session_state["seq_ticket_value"] = text
                 st.rerun()
 
     with col2:
