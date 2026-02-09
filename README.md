@@ -1,4 +1,4 @@
-# admin-5794 — Azure AI Foundry Workflow Demos
+# AgentFlow Studio — Azure AI Foundry Workflow Demos
 
 Interactive Streamlit dashboard showcasing three core workflow patterns built with
 the **Microsoft Agent Framework** and **Azure AI Foundry**.
@@ -30,7 +30,7 @@ the **Microsoft Agent Framework** and **Azure AI Foundry**.
 ### 1. Clone & setup
 
 ```bash
-cd admin-5794-workflow-demos
+cd agentflow-studio-workflow-demos
 python -m venv .venv
 
 # Windows
@@ -68,7 +68,7 @@ The UI opens at **http://localhost:8501** with three tabs.
 ## Project Structure
 
 ```
-admin-5794-workflow-demos/
+agentflow-studio-workflow-demos/
 ├── app.py                          # Streamlit UI (main entry point)
 ├── config.py                       # Shared configuration loader
 ├── requirements.txt                # Python dependencies
@@ -127,4 +127,4 @@ Agent Inspector. Press **F5** to launch in debug mode.
 
 ## License
 
-Internal use — admin-5794 project.
+Internal use — AgentFlow Studio project.
