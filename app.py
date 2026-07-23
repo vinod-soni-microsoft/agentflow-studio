@@ -10,6 +10,7 @@ A tabbed dashboard that demonstrates three Azure AI Foundry workflow patterns:
 import asyncio
 import streamlit as st
 from config import validate_config
+from execution_view import ExecutionView
 
 # ---------------------------------------------------------------------------
 # Page configuration
@@ -47,6 +48,7 @@ st.markdown("""
     .badge-running { background: #fff3cd; color: #856404; }
     .badge-done { background: #d4edda; color: #155724; }
     .badge-waiting { background: #cce5ff; color: #004085; }
+    .badge-error { background: #f8d7da; color: #721c24; }
     div[data-testid="stChatMessage"] { max-width: 100%; }
     /* Hide Streamlit deploy button & toolbar extras */
     .stDeployButton,
@@ -57,6 +59,46 @@ st.markdown("""
     .styles_viewerBadge__CvC9N,
     ._profileContainer_gzau3_53,
     ._profilePreview_gzau3_63 { display: none !important; visibility: hidden !important; }
+
+    /* ── Dynamic execution view ─────────────────────────────────── */
+    .exec-plan {
+        background: #ffffff; border: 1px solid #e6e8ec; border-radius: 14px;
+        padding: 16px 18px; margin: 4px 0 6px 0;
+        box-shadow: 0 1px 3px rgba(16,24,40,0.06);
+    }
+    .exec-title { font-weight: 700; font-size: 1.02rem; color: #1f2933; }
+    .exec-subtitle { font-size: 0.82rem; color: #667085; margin-bottom: 8px; }
+    .exec-steps { display: flex; flex-direction: column; gap: 8px; margin-top: 8px; }
+    .exec-step {
+        display: flex; gap: 12px; align-items: flex-start;
+        padding: 10px 12px; border-radius: 10px;
+        background: #f8f9fb; border: 1px solid #eef0f4;
+        transition: background 0.2s ease;
+    }
+    .exec-step.exec-running {
+        background: linear-gradient(90deg, #fff7e6 0%, #f8f9fb 100%);
+        border-color: #ffe0a3;
+        animation: exec-pulse 1.4s ease-in-out infinite;
+    }
+    @keyframes exec-pulse {
+        0%   { box-shadow: 0 0 0 0 rgba(255,179,0,0.25); }
+        70%  { box-shadow: 0 0 0 8px rgba(255,179,0,0.0); }
+        100% { box-shadow: 0 0 0 0 rgba(255,179,0,0.0); }
+    }
+    .exec-step-emoji { font-size: 1.25rem; line-height: 1.4; }
+    .exec-step-body { flex: 1; min-width: 0; }
+    .exec-step-head {
+        display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    }
+    .exec-step-title { font-weight: 600; color: #1f2933; }
+    .exec-elapsed { font-size: 0.75rem; color: #98a2b3; }
+    .exec-desc { font-size: 0.8rem; color: #667085; margin-top: 2px; }
+    .exec-detail {
+        font-size: 0.82rem; color: #344054; margin-top: 6px;
+        background: #ffffff; border-left: 3px solid #667eea;
+        padding: 6px 10px; border-radius: 0 8px 8px 0;
+        white-space: pre-wrap; word-break: break-word;
+    }
 </style>
 """, unsafe_allow_html=True)
 
@@ -291,38 +333,71 @@ def render_sequential_tab():
         if st.button("▶️ Run Sequential Workflow", type="primary", key="seq_run", disabled=not config_ok):
             from workflows.sequential_workflow import run_sequential_workflow
 
-            with st.status("Running sequential workflow...", expanded=True) as status:
-                events_container = st.container()
-                all_events = []
+            # Dynamic execution plan — updates live as agents run
+            view = ExecutionView(
+                st.empty(),
+                title="🧭 Execution Plan",
+                subtitle="Live agent pipeline · updates as each step runs",
+                steps=[
+                    {"key": "classifier", "icon": "📋", "title": "Classifier",
+                     "desc": "Categorizes the incoming ticket"},
+                    {"key": "researcher", "icon": "🔍", "title": "Researcher",
+                     "desc": "Looks up relevant knowledge-base info"},
+                    {"key": "responder", "icon": "💬", "title": "Responder",
+                     "desc": "Drafts the final customer reply"},
+                ],
+            )
 
-                def on_event(evt):
-                    all_events.append(evt)
+            # Map executor ids → plan step keys
+            step_order = ["classifier", "researcher", "responder"]
+            result_placeholder = st.empty()
+            _buf = {}          # live text buffer per step
+            _last_len = {}     # last-rendered length per step (throttle)
 
-                try:
-                    events = run_async(run_sequential_workflow(
-                        ticket,
-                        on_event=on_event,
-                        classifier_instructions=st.session_state.get("seq_instr_classifier"),
-                        researcher_instructions=st.session_state.get("seq_instr_researcher"),
-                        responder_instructions=st.session_state.get("seq_instr_responder"),
-                    ))
+            def on_event(evt):
+                etype = evt.get("type", "")
+                agent = evt.get("agent", "")
+                if etype == "agent_step_start" and agent in step_order:
+                    idx = step_order.index(agent)
+                    for prev in step_order[:idx]:
+                        view.set_status(prev, "done", render=False)
+                    _buf[agent] = ""
+                    _last_len[agent] = 0
+                    view.set_status(agent, "running", detail="▌")
+                elif etype == "agent_delta" and agent in step_order:
+                    _buf[agent] = evt.get("content", "")
+                    cur = len(_buf[agent])
+                    # Throttle re-renders: every ~14 new chars or on a newline
+                    if cur - _last_len.get(agent, 0) >= 14 or "\n" in evt.get("delta", ""):
+                        _last_len[agent] = cur
+                        view.set_status(agent, "running", detail=_buf[agent] + " ▌")
+                elif etype == "agent_step_complete" and agent in step_order:
+                    view.set_status(agent, "done", detail=evt.get("content", ""))
+                elif etype == "output":
+                    view.set_status("responder", "done")
 
-                    for evt in events:
-                        icon = {"status": "⚙️", "output": "✅"}.get(evt["type"], "📨")
-                        agent = evt.get("agent", "")
-                        if evt["type"] == "output":
-                            events_container.success(f"**Final Customer Reply:**\n\n{evt['content']}")
-                        elif "Invoked" in evt["type"]:
-                            events_container.info(f"{icon} Agent **{agent}** started processing")
-                        elif "Completed" in evt["type"]:
-                            events_container.info(f"✅ Agent **{agent}** completed")
-                        elif evt["type"] == "status":
-                            events_container.caption(f"⚙️ Workflow state: `{evt['content']}`")
+            try:
+                events = run_async(run_sequential_workflow(
+                    ticket,
+                    on_event=on_event,
+                    classifier_instructions=st.session_state.get("seq_instr_classifier"),
+                    researcher_instructions=st.session_state.get("seq_instr_researcher"),
+                    responder_instructions=st.session_state.get("seq_instr_responder"),
+                ))
 
-                    status.update(label="Workflow completed!", state="complete")
-                except Exception as e:
-                    status.update(label="Workflow failed", state="error")
-                    st.error(f"Error: {e}")
+                # Ensure all steps show done, then present the final reply
+                for step in step_order:
+                    view.set_status(step, "done", render=False)
+                view.render()
+
+                final_reply = next(
+                    (e["content"] for e in events if e["type"] == "output"), None
+                )
+                if final_reply:
+                    result_placeholder.success(f"**Final Customer Reply:**\n\n{final_reply}")
+            except Exception as e:
+                view.fail_active("Workflow error")
+                result_placeholder.error(f"Error: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -460,7 +535,61 @@ def render_hitl_tab():
     with col2:
         st.subheader("Workflow Progress")
 
-        # Phase: Analyzing
+        # ── Dynamic execution plan (reflects the current phase across reruns) ──
+        _phase = st.session_state.hitl_phase
+        _phase_status = {
+            "input":      ("pending", "pending", "pending"),
+            "analyzing":  ("running", "pending", "pending"),
+            "decision":   ("done",    "running", "pending"),
+            "processing": ("done",    "done",    "running"),
+            "done":       ("done",    "done",    "done"),
+        }.get(_phase, ("pending", "pending", "pending"))
+
+        hitl_view = ExecutionView(
+            st.empty(),
+            title="🧭 Execution Plan",
+            subtitle="Analyst → Human Gate → Processor",
+            steps=[
+                {"key": "analyst", "icon": "📊", "title": "Analyst",
+                 "desc": "Reviews expense & recommends action"},
+                {"key": "gate", "icon": "🙋", "title": "Human Gate",
+                 "desc": "Pauses for a manager decision"},
+                {"key": "processor", "icon": "💼", "title": "Processor",
+                 "desc": "Finalizes based on the human decision"},
+            ],
+        )
+        for _skey, _sstatus in zip(("analyst", "gate", "processor"), _phase_status):
+            hitl_view.set_status(_skey, _sstatus, render=False)
+        if _phase == "decision":
+            hitl_view.set_status("gate", "running",
+                                 detail="⏸ Waiting for Approve / Reject / Need More Info",
+                                 render=False)
+        if st.session_state.hitl_phase in ("processing", "done"):
+            hitl_view.set_status("gate", "done",
+                                 detail=st.session_state.get("hitl_decision", ""),
+                                 render=False)
+        hitl_view.render()
+
+        # Live streaming callback — maps analyst/processor token deltas onto the plan
+        _hitl_last = {}
+
+        def hitl_on_event(evt):
+            etype = evt.get("type", "")
+            agent = evt.get("agent", "")
+            if agent not in ("analyst", "processor"):
+                return
+            if etype == "agent_step_start":
+                _hitl_last[agent] = 0
+                hitl_view.set_status(agent, "running", detail="▌")
+            elif etype == "agent_delta":
+                full = evt.get("content", "")
+                if len(full) - _hitl_last.get(agent, 0) >= 14 or "\n" in evt.get("delta", ""):
+                    _hitl_last[agent] = len(full)
+                    hitl_view.set_status(agent, "running", detail=full + " ▌")
+            elif etype == "agent_step_complete":
+                hitl_view.set_status(agent, "done", detail=evt.get("content", ""))
+
+
         if st.session_state.hitl_phase == "analyzing":
             with st.status("🔍 Analyzing expense...", expanded=True) as status:
                 try:
@@ -470,7 +599,7 @@ def render_hitl_tab():
                         analyst_instructions=st.session_state.get("hitl_instr_analyst"),
                         processor_instructions=st.session_state.get("hitl_instr_processor"),
                     )
-                    events = run_async(session.start(st.session_state.hitl_expense))
+                    events = run_async(session.start(st.session_state.hitl_expense, on_event=hitl_on_event))
                     st.session_state.hitl_analysis_events = events
                     # Store session for later (we'll recreate it since async context is tricky)
                     st.session_state.hitl_phase = "decision"
@@ -536,8 +665,8 @@ def render_hitl_tab():
                             analyst_instructions=st.session_state.get("hitl_instr_analyst"),
                             processor_instructions=st.session_state.get("hitl_instr_processor"),
                         )
-                        await session.start(expense_text)
-                        return await session.submit_decision(human_decision)
+                        await session.start(expense_text, on_event=hitl_on_event)
+                        return await session.submit_decision(human_decision, on_event=hitl_on_event)
 
                     events = run_async(_run_hitl_end_to_end(st.session_state.hitl_expense, decision))
                     st.session_state.hitl_final_events = events
@@ -699,53 +828,113 @@ def render_group_chat_tab():
         if st.button("▶️ Start Brainstorm", type="primary", key="gc_run", disabled=not config_ok):
             from workflows.group_chat_workflow import run_group_chat_workflow
 
+            agent_icons = {
+                "MarketingLead": "📣",
+                "EngineeringLead": "⚙️",
+                "ProductManager": "📋",
+            }
+            turn_order = ["MarketingLead", "EngineeringLead", "ProductManager"]
+
+            # Build a dynamic plan: every agent turn across every round + final synthesis
+            plan_steps = []
+            for r in range(1, rounds + 1):
+                for name in turn_order:
+                    plan_steps.append({
+                        "key": f"r{r}-{name}",
+                        "icon": agent_icons.get(name, "⚪"),
+                        "title": f"{name}",
+                        "desc": f"Round {r}",
+                    })
+            plan_steps.append({
+                "key": "final",
+                "icon": "🏁",
+                "title": "Product Manager — Final Launch Plan",
+                "desc": "Synthesizes all rounds into an actionable plan",
+            })
+
+            view = ExecutionView(
+                st.empty(),
+                title="🧭 Execution Plan",
+                subtitle=f"Round-robin brainstorm · {rounds} round(s) · live agent turns",
+                steps=plan_steps,
+            )
+
+            def _snippet(text, limit=140):
+                text = (text or "").strip().replace("\n", " ")
+                return text if len(text) <= limit else text[:limit] + "…"
+
+            _gc_last = {}  # throttle per step
+
+            def on_event(evt):
+                etype = evt.get("type", "")
+                agent = evt.get("agent", "")
+                rnd = evt.get("round", 0)
+                if etype == "group_chat_turn_start":
+                    key = f"r{rnd}-{agent}"
+                    _gc_last[key] = 0
+                    view.set_status(key, "running", detail="▌")
+                elif etype == "group_chat_delta":
+                    key = f"r{rnd}-{agent}"
+                    full = evt.get("content", "")
+                    if len(full) - _gc_last.get(key, 0) >= 14 or "\n" in evt.get("delta", ""):
+                        _gc_last[key] = len(full)
+                        view.set_status(key, "running", detail=_snippet(full, 260) + " ▌")
+                elif etype == "group_chat_turn":
+                    view.set_status(f"r{rnd}-{agent}", "done", detail=_snippet(evt.get("content")))
+                elif etype == "final_plan_start":
+                    _gc_last["final"] = 0
+                    view.set_status("final", "running", detail="▌")
+                elif etype == "final_plan_delta":
+                    full = evt.get("content", "")
+                    if len(full) - _gc_last.get("final", 0) >= 14 or "\n" in evt.get("delta", ""):
+                        _gc_last["final"] = len(full)
+                        view.set_status("final", "running", detail=_snippet(full, 260) + " ▌")
+                elif etype == "output":
+                    view.set_status("final", "done", detail=_snippet(evt.get("content"), 200))
+
             chat_container = st.container()
+            result_placeholder = st.empty()
 
-            with st.status(f"Running {rounds}-round brainstorm...", expanded=True) as status:
-                try:
-                    events = run_async(run_group_chat_workflow(
-                        topic,
-                        max_rounds=rounds,
-                        marketing_instructions=st.session_state.get("gc_instr_marketing"),
-                        engineering_instructions=st.session_state.get("gc_instr_engineering"),
-                        pm_instructions=st.session_state.get("gc_instr_pm"),
-                    ))
+            try:
+                events = run_async(run_group_chat_workflow(
+                    topic,
+                    max_rounds=rounds,
+                    on_event=on_event,
+                    marketing_instructions=st.session_state.get("gc_instr_marketing"),
+                    engineering_instructions=st.session_state.get("gc_instr_engineering"),
+                    pm_instructions=st.session_state.get("gc_instr_pm"),
+                ))
 
-                    # Render as a chat-like interface
-                    for evt in events:
-                        if evt["type"] == "group_chat_turn":
-                            agent = evt["agent"]
-                            color = agent_colors.get(agent, "⚪")
-                            round_num = evt["round"]
-                            with chat_container.chat_message(
-                                "assistant",
-                                avatar=color,
-                            ):
-                                st.markdown(f"**{agent}** · Round {round_num}")
-                                st.write(evt["content"])
-
-                        elif evt["type"] == "output":
-                            chat_container.markdown("---")
-                            chat_container.markdown("### 📋 Final Launch Plan")
-                            chat_container.success(evt["content"])
-
-                    status.update(label="Brainstorm complete!", state="complete")
-
-                except Exception as e:
-                    status.update(label="Brainstorm failed", state="error")
-                    st.error(f"Error: {e}")
+                # Render the full transcript below the live plan
+                chat_container.markdown("#### 💬 Transcript")
+                for evt in events:
+                    if evt["type"] == "group_chat_turn":
+                        agent = evt["agent"]
+                        color = agent_colors.get(agent, "⚪")
+                        round_num = evt["round"]
+                        with chat_container.chat_message("assistant", avatar=color):
+                            st.markdown(f"**{agent}** · Round {round_num}")
+                            st.write(evt["content"])
+                    elif evt["type"] == "output":
+                        final_plan = evt["content"]
+                        result_placeholder.markdown("### 📋 Final Launch Plan")
+                        result_placeholder.success(final_plan)
+            except Exception as e:
+                view.fail_active("Brainstorm error")
+                result_placeholder.error(f"Error: {e}")
 
 
 # ---------------------------------------------------------------------------
 # Main — Tabbed layout
 # ---------------------------------------------------------------------------
-st.title("🔄 Azure AI Foundry Workflow Demos")
+st.title("🔄 Azure AI Foundry Demos")
 st.caption("AgentFlow Studio · Microsoft Agent Framework powered workflows")
 
-tab1, tab2, tab3 = st.tabs([
+tab1, tab2, tab3, tab4 = st.tabs([
     "🔗 Sequential Workflow",
     "🙋 Human-in-the-Loop",
     "💬 Group Chat",
+    "📊 Monitoring Dashboard",
 ])
 
 with tab1:
@@ -756,6 +945,10 @@ with tab2:
 
 with tab3:
     render_group_chat_tab()
+
+with tab4:
+    from monitoring_dashboard import render_monitoring_tab
+    render_monitoring_tab()
 
 # Footer
 st.divider()

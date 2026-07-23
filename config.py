@@ -11,6 +11,10 @@ load_dotenv()
 FOUNDRY_PROJECT_ENDPOINT = os.getenv("FOUNDRY_PROJECT_ENDPOINT", "")
 FOUNDRY_MODEL_DEPLOYMENT_NAME = os.getenv("FOUNDRY_MODEL_DEPLOYMENT_NAME", "gpt-4o")
 
+# Initialize Application Insights tracing at import time
+from tracing import init_tracing
+init_tracing()
+
 
 def validate_config() -> bool:
     """Return True if required environment variables are set."""

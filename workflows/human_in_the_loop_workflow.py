@@ -34,6 +34,27 @@ from agent_framework.azure import AzureAIClient
 from azure.identity.aio import DefaultAzureCredential
 
 from config import FOUNDRY_PROJECT_ENDPOINT, FOUNDRY_MODEL_DEPLOYMENT_NAME
+from workflows.streaming import stream_agent_text
+from tracing import get_tracer, trace_workflow_end
+
+
+# ---------------------------------------------------------------------------
+# Streaming helper — emits live token deltas per executor step
+# ---------------------------------------------------------------------------
+async def _run_step(agent: "ChatAgent", messages: "list[ChatMessage]", step_id: str, emit) -> str:
+    """Stream an agent step, emitting start / delta / complete events."""
+    if emit:
+        emit({"type": "agent_step_start", "agent": step_id, "content": ""})
+
+    def _on_delta(delta: str, full: str) -> None:
+        if emit:
+            emit({"type": "agent_delta", "agent": step_id, "delta": delta, "content": full})
+
+    text = await stream_agent_text(agent, messages, _on_delta, workflow_name="human-in-the-loop", agent_name=step_id)
+
+    if emit:
+        emit({"type": "agent_step_complete", "agent": step_id, "content": text})
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -55,15 +76,16 @@ class AnalystExecutor(Executor):
 
     agent: ChatAgent
 
-    def __init__(self, agent: ChatAgent, id: str = "analyst"):
+    def __init__(self, agent: ChatAgent, emit=None, id: str = "analyst"):
         self.agent = agent
+        self._emit = emit
         super().__init__(id=id)
 
     @handler
     async def handle(self, message: ChatMessage, ctx: WorkflowContext[list[ChatMessage]]) -> None:
         messages = [message]
-        response = await self.agent.run(messages)
-        messages.extend(response.messages)
+        text = await _run_step(self.agent, messages, self.id, self._emit)
+        messages.append(ChatMessage(role=Role.ASSISTANT, text=text))
         # Send the analysis downstream (to the human gate)
         await ctx.send_message(messages)
 
@@ -132,14 +154,15 @@ class ProcessorExecutor(Executor):
 
     agent: ChatAgent
 
-    def __init__(self, agent: ChatAgent, id: str = "processor"):
+    def __init__(self, agent: ChatAgent, emit=None, id: str = "processor"):
         self.agent = agent
+        self._emit = emit
         super().__init__(id=id)
 
     @handler
     async def handle(self, messages: list[ChatMessage], ctx: WorkflowContext[Any, str]) -> None:
-        response = await self.agent.run(messages)
-        await ctx.yield_output(response.text)
+        text = await _run_step(self.agent, messages, self.id, self._emit)
+        await ctx.yield_output(text)
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +210,9 @@ class HumanInTheLoopSession:
         Start the workflow. Returns events up to the point where
         human input is requested.
         """
+        _wf_tracer = get_tracer("agentflow-studio.workflows")
+        self._wf_span = _wf_tracer.start_span("workflow/human-in-the-loop", attributes={"workflow.name": "human-in-the-loop", "workflow.input": expense_text[:500]})
+
         self._credential = DefaultAzureCredential()
         credential = self._credential
 
@@ -206,9 +232,9 @@ class HumanInTheLoopSession:
             instructions=self._processor_instructions,
         ).__aenter__()
 
-        analyst = AnalystExecutor(self._analyst_agent)
+        analyst = AnalystExecutor(self._analyst_agent, emit=on_event)
         self._human_gate = HumanGateExecutor()
-        processor = ProcessorExecutor(self._processor_agent)
+        processor = ProcessorExecutor(self._processor_agent, emit=on_event)
 
         self._workflow = (
             WorkflowBuilder()
@@ -249,6 +275,7 @@ class HumanInTheLoopSession:
         events = self._result_to_dicts(result, on_event)
 
         # Cleanup
+        trace_workflow_end(getattr(self, "_wf_span", None), "human-in-the-loop", success=True)
         await self._cleanup()
         return events
 

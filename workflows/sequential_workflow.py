@@ -30,6 +30,8 @@ from agent_framework.azure import AzureAIClient
 from azure.identity.aio import DefaultAzureCredential
 
 from config import FOUNDRY_PROJECT_ENDPOINT, FOUNDRY_MODEL_DEPLOYMENT_NAME
+from workflows.streaming import stream_agent_text
+from tracing import get_tracer, trace_workflow_end
 
 
 # ---------------------------------------------------------------------------
@@ -40,15 +42,16 @@ class ClassifierExecutor(Executor):
 
     agent: ChatAgent
 
-    def __init__(self, agent: ChatAgent, id: str = "classifier"):
+    def __init__(self, agent: ChatAgent, emit=None, id: str = "classifier"):
         self.agent = agent
+        self._emit = emit
         super().__init__(id=id)
 
     @handler
     async def handle(self, message: ChatMessage, ctx: WorkflowContext[list[ChatMessage]]) -> None:
         messages = [message]
-        response = await self.agent.run(messages)
-        messages.extend(response.messages)
+        text = await _run_step(self.agent, messages, self.id, self._emit)
+        messages.append(ChatMessage(role=Role.ASSISTANT, text=text))
         await ctx.send_message(messages)
 
 
@@ -60,14 +63,15 @@ class ResearcherExecutor(Executor):
 
     agent: ChatAgent
 
-    def __init__(self, agent: ChatAgent, id: str = "researcher"):
+    def __init__(self, agent: ChatAgent, emit=None, id: str = "researcher"):
         self.agent = agent
+        self._emit = emit
         super().__init__(id=id)
 
     @handler
     async def handle(self, messages: list[ChatMessage], ctx: WorkflowContext[list[ChatMessage]]) -> None:
-        response = await self.agent.run(messages)
-        messages.extend(response.messages)
+        text = await _run_step(self.agent, messages, self.id, self._emit)
+        messages.append(ChatMessage(role=Role.ASSISTANT, text=text))
         await ctx.send_message(messages)
 
 
@@ -79,14 +83,34 @@ class ResponderExecutor(Executor):
 
     agent: ChatAgent
 
-    def __init__(self, agent: ChatAgent, id: str = "responder"):
+    def __init__(self, agent: ChatAgent, emit=None, id: str = "responder"):
         self.agent = agent
+        self._emit = emit
         super().__init__(id=id)
 
     @handler
     async def handle(self, messages: list[ChatMessage], ctx: WorkflowContext[Any, str]) -> None:
-        response = await self.agent.run(messages)
-        await ctx.yield_output(response.text)
+        text = await _run_step(self.agent, messages, self.id, self._emit)
+        await ctx.yield_output(text)
+
+
+# ---------------------------------------------------------------------------
+# Streaming helper — emits live token deltas per executor step
+# ---------------------------------------------------------------------------
+async def _run_step(agent: ChatAgent, messages: list[ChatMessage], step_id: str, emit) -> str:
+    """Stream an agent step, emitting start / delta / complete events."""
+    if emit:
+        emit({"type": "agent_step_start", "agent": step_id, "content": ""})
+
+    def _on_delta(delta: str, full: str) -> None:
+        if emit:
+            emit({"type": "agent_delta", "agent": step_id, "delta": delta, "content": full})
+
+    text = await stream_agent_text(agent, messages, _on_delta, workflow_name="sequential", agent_name=step_id)
+
+    if emit:
+        emit({"type": "agent_step_complete", "agent": step_id, "content": text})
+    return text
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +169,8 @@ async def run_sequential_workflow(
         )
 
     events_log: list[dict] = []
+    _wf_tracer = get_tracer("agentflow-studio.workflows")
+    _wf_span = _wf_tracer.start_span("workflow/sequential", attributes={"workflow.name": "sequential", "workflow.input": ticket_text[:500]})
 
     async with DefaultAzureCredential() as credential:
         client_kwargs = dict(
@@ -167,9 +193,9 @@ async def run_sequential_workflow(
                 instructions=responder_instructions,
             ) as responder_agent,
         ):
-            classifier = ClassifierExecutor(classifier_agent)
-            researcher = ResearcherExecutor(researcher_agent)
-            responder = ResponderExecutor(responder_agent)
+            classifier = ClassifierExecutor(classifier_agent, emit=on_event)
+            researcher = ResearcherExecutor(researcher_agent, emit=on_event)
+            responder = ResponderExecutor(responder_agent, emit=on_event)
 
             workflow = (
                 WorkflowBuilder()
@@ -209,6 +235,7 @@ async def run_sequential_workflow(
                     if on_event:
                         on_event(entry)
 
+    trace_workflow_end(_wf_span, "sequential", success=True)
     return events_log
 
 

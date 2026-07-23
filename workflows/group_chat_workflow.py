@@ -33,6 +33,8 @@ from agent_framework.azure import AzureAIClient
 from azure.identity.aio import DefaultAzureCredential
 
 from config import FOUNDRY_PROJECT_ENDPOINT, FOUNDRY_MODEL_DEPLOYMENT_NAME
+from workflows.streaming import stream_agent_text
+from tracing import get_tracer, trace_workflow_end
 
 DEFAULT_ROUNDS = 3
 
@@ -56,6 +58,7 @@ class GroupChatModerator(Executor):
         turn_order: list[str],
         max_rounds: int = DEFAULT_ROUNDS,
         id: str = "moderator",
+        on_event=None,
     ):
         self.agents = agents
         self.turn_order = turn_order
@@ -64,7 +67,13 @@ class GroupChatModerator(Executor):
         self._round = 0
         self._conversation: list[ChatMessage] = []
         self._events: list[dict] = []
+        self._on_event = on_event
         super().__init__(id=id)
+
+    def _emit(self, entry: dict) -> None:
+        """Forward a progress entry to the live UI callback (if any)."""
+        if self._on_event:
+            self._on_event(entry)
 
     @handler
     async def handle_topic(self, message: ChatMessage, ctx: WorkflowContext[Any, list[dict]]) -> None:
@@ -89,8 +98,30 @@ class GroupChatModerator(Executor):
         for self._round in range(self.max_rounds):
             for agent_name in self.turn_order:
                 agent = self.agents[agent_name]
-                response = await agent.run(list(self._conversation))
-                reply_text = response.text
+                round_no = self._round + 1
+
+                # Announce the turn is starting (live progress)
+                self._emit({
+                    "type": "group_chat_turn_start",
+                    "agent": agent_name,
+                    "round": round_no,
+                    "content": "",
+                })
+
+                # Stream the agent's contribution token-by-token
+                def _on_delta(delta, full, _agent=agent_name, _round=round_no):
+                    self._emit({
+                        "type": "group_chat_delta",
+                        "agent": _agent,
+                        "round": _round,
+                        "delta": delta,
+                        "content": full,
+                    })
+
+                reply_text = await stream_agent_text(
+                    agent, list(self._conversation), _on_delta,
+                    workflow_name="group-chat", agent_name=agent_name,
+                )
 
                 # Record the turn
                 assistant_msg = ChatMessage(
@@ -102,10 +133,19 @@ class GroupChatModerator(Executor):
                 event_entry = {
                     "type": "group_chat_turn",
                     "agent": agent_name,
-                    "round": self._round + 1,
+                    "round": round_no,
                     "content": reply_text,
                 }
                 self._events.append(event_entry)
+                self._emit(event_entry)
+
+        # Announce the final synthesis is starting
+        self._emit({
+            "type": "final_plan_start",
+            "agent": "ProductManager",
+            "round": self._round + 1,
+            "content": "",
+        })
 
         # Final summary from ProductManager
         summary_prompt = ChatMessage(
@@ -119,14 +159,29 @@ class GroupChatModerator(Executor):
         )
         self._conversation.append(summary_prompt)
         pm_agent = self.agents.get("ProductManager") or list(self.agents.values())[-1]
-        final_response = await pm_agent.run(list(self._conversation))
 
-        self._events.append({
+        def _on_final_delta(delta, full):
+            self._emit({
+                "type": "final_plan_delta",
+                "agent": "ProductManager",
+                "round": self._round + 1,
+                "delta": delta,
+                "content": full,
+            })
+
+        final_text = await stream_agent_text(
+            pm_agent, list(self._conversation), _on_final_delta,
+            workflow_name="group-chat", agent_name="ProductManager-Summary",
+        )
+
+        output_entry = {
             "type": "output",
             "agent": "ProductManager",
             "round": self._round + 1,
-            "content": final_response.text,
-        })
+            "content": final_text,
+        }
+        self._events.append(output_entry)
+        self._emit(output_entry)
 
         await ctx.yield_output(self._events)
 
@@ -183,6 +238,8 @@ async def run_group_chat_workflow(
         )
 
     all_events: list[dict] = []
+    _wf_tracer = get_tracer("agentflow-studio.workflows")
+    _wf_span = _wf_tracer.start_span("workflow/group-chat", attributes={"workflow.name": "group-chat", "workflow.input": topic[:500]})
 
     async with DefaultAzureCredential() as credential:
         client_kwargs = dict(
@@ -216,6 +273,7 @@ async def run_group_chat_workflow(
                 agents=agents,
                 turn_order=turn_order,
                 max_rounds=max_rounds,
+                on_event=on_event,
             )
 
             workflow = (
@@ -228,22 +286,13 @@ async def run_group_chat_workflow(
 
             async for event in workflow.run_stream(user_msg):
                 if isinstance(event, WorkflowOutputEvent):
-                    # event.data is our list[dict] of turns
-                    for turn in event.data:
-                        all_events.append(turn)
-                        if on_event:
-                            on_event(turn)
-                elif isinstance(event, WorkflowStatusEvent):
-                    entry = {
-                        "type": "status",
-                        "agent": "workflow",
-                        "round": 0,
-                        "content": str(event.state),
-                    }
-                    all_events.append(entry)
-                    if on_event:
-                        on_event(entry)
+                    # event.data is the full ordered list of turn dicts + final output.
+                    # Live UI updates already fired via the moderator callback, so we
+                    # only collect them into the returned log here (no re-emit).
+                    for entry in event.data:
+                        all_events.append(entry)
 
+    trace_workflow_end(_wf_span, "group-chat", success=True)
     return all_events
 
 
