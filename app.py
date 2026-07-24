@@ -330,6 +330,13 @@ def render_sequential_tab():
     with col2:
         st.subheader("Workflow Execution")
 
+        enable_guardrails = st.toggle(
+            "🛡️ Enable Guardrails",
+            value=True,
+            key="seq_guardrails",
+            help="When enabled, input and output are checked against the blocklist (blocklist.csv) to block prohibited content.",
+        )
+
         if st.button("▶️ Run Sequential Workflow", type="primary", key="seq_run", disabled=not config_ok):
             from workflows.sequential_workflow import run_sequential_workflow
 
@@ -383,6 +390,7 @@ def render_sequential_tab():
                     classifier_instructions=st.session_state.get("seq_instr_classifier"),
                     researcher_instructions=st.session_state.get("seq_instr_researcher"),
                     responder_instructions=st.session_state.get("seq_instr_responder"),
+                    enable_guardrails=enable_guardrails,
                 ))
 
                 # Ensure all steps show done, then present the final reply
@@ -390,11 +398,18 @@ def render_sequential_tab():
                     view.set_status(step, "done", render=False)
                 view.render()
 
-                final_reply = next(
-                    (e["content"] for e in events if e["type"] == "output"), None
+                # Check for guardrail blocks
+                guardrail_block = next(
+                    (e["content"] for e in events if e["type"] == "guardrail_blocked"), None
                 )
-                if final_reply:
-                    result_placeholder.success(f"**Final Customer Reply:**\n\n{final_reply}")
+                if guardrail_block:
+                    result_placeholder.warning(guardrail_block)
+                else:
+                    final_reply = next(
+                        (e["content"] for e in events if e["type"] == "output"), None
+                    )
+                    if final_reply:
+                        result_placeholder.success(f"**Final Customer Reply:**\n\n{final_reply}")
             except Exception as e:
                 view.fail_active("Workflow error")
                 result_placeholder.error(f"Error: {e}")

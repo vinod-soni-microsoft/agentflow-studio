@@ -1,0 +1,17 @@
+Term,Type
+damn,Exact match
+stupid,Exact match
+idiot,Exact match
+scam,Exact match
+fraud,Exact match
+lawsuit,Exact match
+sue you,Exact match
+rip off,Exact match
+steal,Exact match
+hack my account,Exact match
+kill,Exact match
+threat,Exact match
+\b\d{3}-\d{2}-\d{4}\b,Regex
+\b\d{16}\b,Regex
+\b[A-Za-z0-9._%+-]+@competitor\.com\b,Regex
+password\s*[:=]\s*\S+,Regex

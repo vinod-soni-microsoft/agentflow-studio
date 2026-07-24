@@ -12,6 +12,7 @@ sequential (pipeline) pattern built with the Microsoft Agent Framework.
 """
 
 import asyncio
+import pathlib
 from typing import Any
 
 from agent_framework import (
@@ -31,7 +32,11 @@ from azure.identity.aio import DefaultAzureCredential
 
 from config import FOUNDRY_PROJECT_ENDPOINT, FOUNDRY_MODEL_DEPLOYMENT_NAME
 from workflows.streaming import stream_agent_text
+from workflows.guardrails import GuardrailsMiddleware
 from tracing import get_tracer, trace_workflow_end
+
+# Path to the blocklist CSV (project root)
+_BLOCKLIST_CSV = str(pathlib.Path(__file__).resolve().parent.parent / "blocklist.csv")
 
 
 # ---------------------------------------------------------------------------
@@ -95,12 +100,42 @@ class ResponderExecutor(Executor):
 
 
 # ---------------------------------------------------------------------------
+# Module-level guardrails instance (set during workflow run)
+# ---------------------------------------------------------------------------
+_active_guardrails: GuardrailsMiddleware | None = None
+
+
+# ---------------------------------------------------------------------------
 # Streaming helper — emits live token deltas per executor step
 # ---------------------------------------------------------------------------
 async def _run_step(agent: ChatAgent, messages: list[ChatMessage], step_id: str, emit) -> str:
-    """Stream an agent step, emitting start / delta / complete events."""
+    """Stream an agent step, emitting start / delta / complete events.
+    
+    If guardrails are active, checks input before calling the model and
+    checks output after generation completes.
+    """
     if emit:
         emit({"type": "agent_step_start", "agent": step_id, "content": ""})
+
+    # --- Input guardrail check ---
+    if _active_guardrails:
+        for msg in messages:
+            msg_text = msg.text or ""
+            if hasattr(msg, "contents") and msg.contents:
+                for part in msg.contents:
+                    if hasattr(part, "text"):
+                        msg_text += " " + part.text
+            violations = _active_guardrails._scan(msg_text)
+            if violations:
+                blocked_terms = ", ".join(v["term"] for v in violations)
+                blocked_msg = (
+                    f"⚠️ **Guardrail triggered** — input blocked because it contains "
+                    f"restricted content: [{blocked_terms}]. "
+                    f"Please rephrase your request without prohibited terms."
+                )
+                if emit:
+                    emit({"type": "agent_step_complete", "agent": step_id, "content": blocked_msg})
+                raise GuardrailViolationError(blocked_msg)
 
     def _on_delta(delta: str, full: str) -> None:
         if emit:
@@ -108,9 +143,24 @@ async def _run_step(agent: ChatAgent, messages: list[ChatMessage], step_id: str,
 
     text = await stream_agent_text(agent, messages, _on_delta, workflow_name="sequential", agent_name=step_id)
 
+    # --- Output guardrail check ---
+    if _active_guardrails:
+        violations = _active_guardrails._scan(text)
+        if violations:
+            blocked_terms = ", ".join(v["term"] for v in violations)
+            text = (
+                f"⚠️ **Guardrail triggered** — model response blocked because it contains "
+                f"restricted content: [{blocked_terms}]. Response suppressed for safety."
+            )
+
     if emit:
         emit({"type": "agent_step_complete", "agent": step_id, "content": text})
     return text
+
+
+class GuardrailViolationError(Exception):
+    """Raised when a guardrail blocks the input."""
+    pass
 
 
 # ---------------------------------------------------------------------------
@@ -122,6 +172,7 @@ async def run_sequential_workflow(
     classifier_instructions: str | None = None,
     researcher_instructions: str | None = None,
     responder_instructions: str | None = None,
+    enable_guardrails: bool = True,
 ):
     """
     Execute the sequential pipeline and return a list of event dicts
@@ -172,6 +223,10 @@ async def run_sequential_workflow(
     _wf_tracer = get_tracer("agentflow-studio.workflows")
     _wf_span = _wf_tracer.start_span("workflow/sequential", attributes={"workflow.name": "sequential", "workflow.input": ticket_text[:500]})
 
+    # Build guardrails from blocklist CSV and set as active for _run_step
+    global _active_guardrails
+    _active_guardrails = GuardrailsMiddleware.from_csv(_BLOCKLIST_CSV) if enable_guardrails else None
+
     async with DefaultAzureCredential() as credential:
         client_kwargs = dict(
             project_endpoint=FOUNDRY_PROJECT_ENDPOINT,
@@ -207,33 +262,43 @@ async def run_sequential_workflow(
 
             user_msg = ChatMessage(role=Role.USER, text=ticket_text)
 
-            async for event in workflow.run_stream(user_msg):
-                entry: dict = {}
-                if isinstance(event, WorkflowStatusEvent):
-                    entry = {
-                        "type": "status",
-                        "agent": "workflow",
-                        "content": str(event.state),
-                    }
-                elif isinstance(event, WorkflowOutputEvent):
-                    entry = {
-                        "type": "output",
-                        "agent": "responder",
-                        "content": event.data,
-                    }
-                else:
-                    evt_name = event.__class__.__name__
-                    executor_id = getattr(event, "executor_id", "")
-                    entry = {
-                        "type": evt_name,
-                        "agent": executor_id,
-                        "content": str(event),
-                    }
+            try:
+                async for event in workflow.run_stream(user_msg):
+                    entry: dict = {}
+                    if isinstance(event, WorkflowStatusEvent):
+                        entry = {
+                            "type": "status",
+                            "agent": "workflow",
+                            "content": str(event.state),
+                        }
+                    elif isinstance(event, WorkflowOutputEvent):
+                        entry = {
+                            "type": "output",
+                            "agent": "responder",
+                            "content": event.data,
+                        }
+                    else:
+                        evt_name = event.__class__.__name__
+                        executor_id = getattr(event, "executor_id", "")
+                        entry = {
+                            "type": evt_name,
+                            "agent": executor_id,
+                            "content": str(event),
+                        }
 
-                if entry:
-                    events_log.append(entry)
-                    if on_event:
-                        on_event(entry)
+                    if entry:
+                        events_log.append(entry)
+                        if on_event:
+                            on_event(entry)
+            except GuardrailViolationError as gv:
+                entry = {
+                    "type": "guardrail_blocked",
+                    "agent": "guardrails",
+                    "content": str(gv),
+                }
+                events_log.append(entry)
+                if on_event:
+                    on_event(entry)
 
     trace_workflow_end(_wf_span, "sequential", success=True)
     return events_log
